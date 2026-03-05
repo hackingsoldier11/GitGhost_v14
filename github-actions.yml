@@ -1,0 +1,228 @@
+name: GitGhost Security Scan
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+  push:
+    branches: [ main, develop ]
+  schedule:
+    # Weekly scan every Monday at 2 AM
+    - cron: '0 2 * * 1'
+
+jobs:
+  gitghost-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      # Required for SARIF upload
+      security-events: write
+      contents: read
+      pull-requests: write
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        # Fetch full history for GitGhost
+        fetch-depth: 0
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install GitGhost
+      run: |
+        pip install --upgrade pip
+        pip install fpdf pandas scikit-learn
+        # In production, replace with: pip install gitghost
+    
+    - name: Download GitGhost Scanner
+      run: |
+        # In production, this would be installed via pip
+        # For now, we'll assume it's in the repo
+        wget https://raw.githubusercontent.com/YOUR_REPO/gitghost/main/gitghost_core_v14.py
+        chmod +x gitghost_core_v14.py
+    
+    - name: Run GitGhost Scan
+      id: scan
+      run: |
+        python gitghost_core_v14.py . --since 90 --output gitghost_results.json
+        echo "scan_complete=true" >> $GITHUB_OUTPUT
+      continue-on-error: true
+    
+    - name: Check for Critical Findings
+      id: check_critical
+      run: |
+        if [ -f gitghost_results.json ]; then
+          CRITICAL_COUNT=$(cat gitghost_results.json | jq '[.[] | select(.risk=="CRITICAL")] | length')
+          HIGH_COUNT=$(cat gitghost_results.json | jq '[.[] | select(.risk=="HIGH")] | length')
+          TOTAL_COUNT=$(cat gitghost_results.json | jq 'length')
+          
+          echo "critical_count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
+          echo "high_count=$HIGH_COUNT" >> $GITHUB_OUTPUT
+          echo "total_count=$TOTAL_COUNT" >> $GITHUB_OUTPUT
+          
+          echo "## 🔍 GitGhost Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Total Findings:** $TOTAL_COUNT" >> $GITHUB_STEP_SUMMARY
+          echo "- **Critical:** $CRITICAL_COUNT" >> $GITHUB_STEP_SUMMARY
+          echo "- **High:** $HIGH_COUNT" >> $GITHUB_STEP_SUMMARY
+          
+          if [ $CRITICAL_COUNT -gt 0 ]; then
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "❌ **CRITICAL secrets detected in git history!**" >> $GITHUB_STEP_SUMMARY
+          elif [ $HIGH_COUNT -gt 5 ]; then
+            echo "status=warning" >> $GITHUB_OUTPUT
+            echo "⚠️ **Multiple HIGH-risk findings detected**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "status=passed" >> $GITHUB_OUTPUT
+            echo "✅ **No critical issues found**" >> $GITHUB_STEP_SUMMARY
+          fi
+        else
+          echo "status=error" >> $GITHUB_OUTPUT
+          echo "total_count=0" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: Convert to SARIF
+      if: steps.scan.outputs.scan_complete == 'true'
+      run: |
+        python3 << 'EOF'
+        import json
+        
+        # Read GitGhost results
+        with open('gitghost_results.json', 'r') as f:
+            findings = json.load(f)
+        
+        # Convert to SARIF format
+        sarif = {
+            "version": "2.1.0",
+            "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+            "runs": [{
+                "tool": {
+                    "driver": {
+                        "name": "GitGhost",
+                        "version": "14.0",
+                        "informationUri": "https://github.com/YOUR_REPO/gitghost",
+                        "rules": []
+                    }
+                },
+                "results": []
+            }]
+        }
+        
+        # Map findings to SARIF results
+        rule_ids = set()
+        for finding in findings:
+            rule_id = finding['reason'].split('|')[0].strip().replace(' ', '_').replace(':', '')
+            
+            # Add rule if not exists
+            if rule_id not in rule_ids:
+                sarif['runs'][0]['tool']['driver']['rules'].append({
+                    "id": rule_id,
+                    "name": finding['reason'].split('|')[0].strip(),
+                    "shortDescription": {
+                        "text": finding['reason']
+                    },
+                    "fullDescription": {
+                        "text": f"CVSS Score: {finding['cvss_score']} - {finding['cvss_vector']}"
+                    },
+                    "help": {
+                        "text": "Secret detected in deleted file. Use git-filter-repo to remove from history."
+                    }
+                })
+                rule_ids.add(rule_id)
+            
+            # Map severity
+            level_map = {
+                'CRITICAL': 'error',
+                'HIGH': 'error',
+                'MEDIUM': 'warning',
+                'LOW': 'note'
+            }
+            
+            sarif['runs'][0]['results'].append({
+                "ruleId": rule_id,
+                "level": level_map.get(finding['risk'], 'warning'),
+                "message": {
+                    "text": f"{finding['reason']} in deleted file: {finding['file']}"
+                },
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": {
+                            "uri": finding['file']
+                        }
+                    }
+                }],
+                "properties": {
+                    "cvss_score": finding['cvss_score'],
+                    "author": finding['author'],
+                    "commit": finding['commit'],
+                    "date": finding['date']
+                }
+            })
+        
+        # Save SARIF
+        with open('gitghost.sarif', 'w') as f:
+            json.dump(sarif, f, indent=2)
+        EOF
+    
+    - name: Upload SARIF to GitHub Security
+      if: steps.scan.outputs.scan_complete == 'true'
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: gitghost.sarif
+        category: gitghost
+    
+    - name: Comment on PR
+      if: github.event_name == 'pull_request' && steps.scan.outputs.scan_complete == 'true'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          const results = JSON.parse(fs.readFileSync('gitghost_results.json', 'utf8'));
+          
+          const critical = results.filter(r => r.risk === 'CRITICAL');
+          const high = results.filter(r => r.risk === 'HIGH');
+          
+          let comment = '## 🔍 GitGhost Security Scan\n\n';
+          comment += `**Total Findings:** ${results.length}\n`;
+          comment += `- 🔴 Critical: ${critical.length}\n`;
+          comment += `- 🟠 High: ${high.length}\n\n`;
+          
+          if (critical.length > 0) {
+            comment += '### ⚠️ Critical Findings\n\n';
+            critical.slice(0, 5).forEach(f => {
+              comment += `- **${f.file}** (CVSS: ${f.cvss_score})\n`;
+              comment += `  - ${f.reason}\n`;
+              comment += `  - Author: ${f.author} (${f.date})\n`;
+              comment += `  - Commit: \`${f.commit.substring(0, 7)}\`\n\n`;
+            });
+          }
+          
+          if (critical.length > 0) {
+            comment += '\n❌ **This PR cannot be merged until critical secrets are removed from git history.**\n';
+            comment += '\n**Remediation:** Use `git-filter-repo` or BFG Repo-Cleaner to purge secrets from history.\n';
+          }
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+    
+    - name: Upload Artifacts
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: gitghost-results
+        path: |
+          gitghost_results.json
+          gitghost.sarif
+    
+    - name: Fail on Critical Findings
+      if: steps.check_critical.outputs.status == 'failed'
+      run: |
+        echo "❌ Critical secrets detected in git history!"
+        echo "This build is failing to prevent merging vulnerable code."
+        exit 1

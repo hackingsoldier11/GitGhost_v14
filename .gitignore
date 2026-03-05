@@ -1,0 +1,14 @@
+# GitGhost ignores
+__pycache__/
+*.pyc
+.env
+.gitghost_cache.json
+ghost_report_v14.json
+tectonic.exe
+tectonic.zip
+*.pdf
+*.pptx
+*.docx
+*.log
+tmp/
+.gemini/
