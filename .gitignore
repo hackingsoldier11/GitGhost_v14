@@ -1,14 +1,68 @@
-# GitGhost ignores
+# === GitGhost v14.0 Production Code Only Ignore ===
+
+# Folders to Exclude
 __pycache__/
-*.pyc
-.env
-.gitghost_cache.json
-ghost_report_v14.json
+.gemini/
+.git/
+tmp/
+juice-shop/
+proof_repo/
+test_repo/
+test_repo_2/
+GitGhost_v14/
+test_tikz/
+
+# Large binaries and logs
 tectonic.exe
 tectonic.zip
+*.log
+*.bak
+*.tmp
+*.pyc
+.env
+
+# Non-Code Artifacts
 *.pdf
 *.pptx
 *.docx
-*.log
-tmp/
-.gemini/
+*.tex
+*.png
+*.jpg
+*.gif
+
+# Data Files (Local Only)
+.gitghost_cache.json
+ghost_report_v14.json
+
+# Exclude scratch scripts (keep core logic only)
+build_latex.py
+convert_pdf_to_word.py
+evolve_threats.py
+evolve_threats_fix.py
+fix_buttons.py
+fix_indent.py
+fix_owasp_final.py
+fix_owasp_order.py
+merge_threats.py
+multi_repo_scanner.py
+patch_llm.py
+professional_ppt_v14.py
+proof.py
+update_project_ppt.py
+update_chapters.py
+test_v14_f.py
+demo.py
+
+# Keep Core Repository Files
+!app.py
+!gitghost_core_v14.py
+!gitghost.py
+!pre-commit.py
+!generate_report_pdf.py
+!generate_ppt.py
+!templates/
+!static/
+!README.md
+!LEARNING_SETUP.md
+!.gitignore
+!requirements.txt
